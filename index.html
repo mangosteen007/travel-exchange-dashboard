@@ -111,20 +111,22 @@
 </div>
 
 <script>
+// per: 표시 단위 (예: JPY는 100엔 기준으로 표시)
+// historicalData, ratesData 는 모두 "표시 단위(per) 기준 KRW 값"으로 저장
 const CURRENCIES = [
-  { code: 'TWD', name: '대만 달러',        flag: '🇹🇼', dest: '대만',      unit: '1 TWD',    color: '#0F6E56' },
-  { code: 'USD', name: '미국 달러',        flag: '🇺🇸', dest: '미국',      unit: '1 USD',    color: '#378ADD' },
-  { code: 'VND', name: '베트남 동',        flag: '🇻🇳', dest: '베트남',    unit: '100 VND',  color: '#D4537E', per: 100 },
-  { code: 'EUR', name: '유럽 유로',        flag: '🇪🇺', dest: '유럽',      unit: '1 EUR',    color: '#3B6D11' },
+  { code: 'TWD', name: '대만 달러',        flag: '🇹🇼', dest: '대만',      unit: '1 TWD',    color: '#0F6E56', per: 1    },
+  { code: 'USD', name: '미국 달러',        flag: '🇺🇸', dest: '미국',      unit: '1 USD',    color: '#378ADD', per: 1    },
+
+  { code: 'EUR', name: '유럽 유로',        flag: '🇪🇺', dest: '유럽',      unit: '1 EUR',    color: '#3B6D11', per: 1    },
   { code: 'IDR', name: '인도네시아 루피아', flag: '🇮🇩', dest: '인도네시아', unit: '1000 IDR', color: '#D85A30', per: 1000 },
-  { code: 'JPY', name: '일본 엔',          flag: '🇯🇵', dest: '일본',      unit: '100 JPY',  color: '#E24B4A', per: 100 },
-  { code: 'CNY', name: '중국 위안',        flag: '🇨🇳', dest: '중국',      unit: '1 CNY',    color: '#993556' },
-  { code: 'THB', name: '태국 바트',        flag: '🇹🇭', dest: '태국',      unit: '1 THB',    color: '#BA7517' },
-  { code: 'HKD', name: '홍콩 달러',        flag: '🇭🇰', dest: '홍콩',      unit: '1 HKD',    color: '#7F77DD' },
+  { code: 'JPY', name: '일본 엔',          flag: '🇯🇵', dest: '일본',      unit: '100 JPY',  color: '#E24B4A', per: 100  },
+  { code: 'CNY', name: '중국 위안',        flag: '🇨🇳', dest: '중국',      unit: '1 CNY',    color: '#993556', per: 1    },
+  { code: 'THB', name: '태국 바트',        flag: '🇹🇭', dest: '태국',      unit: '1 THB',    color: '#BA7517', per: 1    },
+  { code: 'HKD', name: '홍콩 달러',        flag: '🇭🇰', dest: '홍콩',      unit: '1 HKD',    color: '#7F77DD', per: 1    },
 ];
 
-let ratesData = {};
-let historicalData = {};
+let ratesData = {};      // code → KRW per 표시단위 (예: JPY → 100엔당 원화)
+let historicalData = {}; // code → [{t, v}] (v = KRW per 표시단위)
 let selectedCode = 'JPY';
 let chartInstance = null;
 let currentPeriod = 30;
@@ -133,20 +135,39 @@ function dateStr(d) {
   return d.toISOString().slice(0, 10);
 }
 
-function buildHistory(rates, codes, per) {
+// EUR 기준 rates에서 KRW-per-표시단위 계산
+// rates[date] = { USD: 1.08, JPY: 160, KRW: 1500, ... } (EUR 기준)
+function eurRatesToKrw(ratesObj, dates) {
   const history = {};
   const latest = {};
-  const dates = Object.keys(rates).sort();
-  codes.forEach(c => {
-    history[c.code] = dates.map(dt => {
-      const raw = rates[dt][c.code.toLowerCase()] ?? rates[dt][c.code];
-      if (!raw) return null;
-      return { t: new Date(dt), v: (1 / raw) * (c.per || 1) };
-    }).filter(Boolean);
-    const lastDate = dates[dates.length - 1];
-    const rawLatest = rates[lastDate]?.[c.code.toLowerCase()] ?? rates[lastDate]?.[c.code];
-    if (rawLatest) latest[c.code] = (1 / rawLatest) * (c.per || 1);
+  CURRENCIES.forEach(c => { history[c.code] = []; });
+
+  dates.forEach(dt => {
+    const r = ratesObj[dt];
+    if (!r || !r['KRW']) return;
+    const eurToKrw = r['KRW']; // 1 EUR = N KRW
+    CURRENCIES.forEach(c => {
+      if (c.code === 'VND') return; // 별도 처리
+      const eurToX = c.code === 'EUR' ? 1 : r[c.code];
+      if (!eurToX) return;
+      // 1 KRW = (1/eurToKrw) EUR = (1/eurToKrw * eurToX) 외화
+      // 1 외화 = eurToKrw / eurToX KRW
+      const krwPerOne = eurToKrw / eurToX;
+      history[c.code].push({ t: new Date(dt), v: krwPerOne * c.per });
+    });
   });
+
+  // latest = 마지막 날짜
+  const lastDt = dates[dates.length - 1];
+  const r = ratesObj[lastDt];
+  if (r && r['KRW']) {
+    CURRENCIES.forEach(c => {
+      if (c.code === 'VND') return;
+      const eurToX = c.code === 'EUR' ? 1 : r[c.code];
+      if (!eurToX) return;
+      latest[c.code] = (r['KRW'] / eurToX) * c.per;
+    });
+  }
   return { history, latest };
 }
 
@@ -155,73 +176,60 @@ async function fetchAllData() {
   const start = new Date();
   start.setFullYear(start.getFullYear() - 1);
 
-  // 1차 시도: Frankfurter (EUR 기반, KRW 지원)
+  const fxCodes = CURRENCIES.filter(c => c.code !== 'VND').map(c => c.code).join(',') + ',KRW';
+
+  // 1차: Frankfurter (EUR 기준, 일별 히스토리)
+  let history = {};
+  let latest = {};
+  let source = '';
+
   try {
-    const codes = CURRENCIES.map(c => c.code).join(',');
     const [histRes, latestRes] = await Promise.all([
-      fetch(`https://api.frankfurter.app/${dateStr(start)}..${dateStr(end)}?from=KRW&to=${codes}`, { signal: AbortSignal.timeout(8000) }),
-      fetch(`https://api.frankfurter.app/latest?from=KRW&to=${codes}`, { signal: AbortSignal.timeout(8000) })
+      fetch(`https://api.frankfurter.app/${dateStr(start)}..${dateStr(end)}?to=${fxCodes}`, { signal: AbortSignal.timeout(10000) }),
+      fetch(`https://api.frankfurter.app/latest?to=${fxCodes}`, { signal: AbortSignal.timeout(10000) })
     ]);
-    if (!histRes.ok || !latestRes.ok) throw new Error();
+    if (!histRes.ok || !latestRes.ok) throw new Error('frankfurter fail');
     const histJson = await histRes.json();
     const latestJson = await latestRes.json();
-    const dates = Object.keys(histJson.rates).sort();
-    const history = {};
-    const latest = {};
-    CURRENCIES.forEach(c => {
-      history[c.code] = dates.map(dt => {
-        const raw = histJson.rates[dt][c.code];
-        if (!raw) return null;
-        return { t: new Date(dt), v: (1 / raw) * (c.per || 1) };
-      }).filter(Boolean);
-      const rawLatest = latestJson.rates[c.code];
-      if (rawLatest) latest[c.code] = (1 / rawLatest) * (c.per || 1);
-    });
-    return { history, latest, source: 'Frankfurter' };
-  } catch {}
 
-  // 2차 시도: fawazahmed0 (jsDelivr CDN, 날짜별 JSON)
-  try {
-    const endStr = dateStr(end);
-    const startStr = dateStr(start);
-    const latest = {};
-    const history = {};
-
-    // 최신 환율
-    const latestRes = await fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/krw.json`, { signal: AbortSignal.timeout(8000) });
-    if (!latestRes.ok) throw new Error();
-    const latestJson = await latestRes.json();
-    CURRENCIES.forEach(c => {
-      const raw = latestJson.krw[c.code.toLowerCase()];
-      if (raw) latest[c.code] = (1 / raw) * (c.per || 1);
-    });
-
-    // 히스토리: 월별 샘플 12개 (API 부하 줄이기)
-    const sampleDates = [];
-    for (let i = 0; i <= 11; i++) {
-      const d = new Date(end);
-      d.setMonth(d.getMonth() - i);
-      sampleDates.push(dateStr(d));
-    }
-    const histResponses = await Promise.all(
-      sampleDates.map(dt =>
-        fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${dt}/v1/currencies/krw.json`, { signal: AbortSignal.timeout(8000) })
-          .then(r => r.ok ? r.json() : null).catch(() => null)
-      )
-    );
-    CURRENCIES.forEach(c => { history[c.code] = []; });
-    histResponses.forEach((json, i) => {
-      if (!json) return;
-      CURRENCIES.forEach(c => {
-        const raw = json.krw?.[c.code.toLowerCase()];
-        if (raw) history[c.code].push({ t: new Date(sampleDates[i]), v: (1 / raw) * (c.per || 1) });
+    const allRates = { ...histJson.rates };
+    allRates[latestJson.date] = latestJson.rates;
+    const dates = Object.keys(allRates).sort();
+    const result = eurRatesToKrw(allRates, dates);
+    history = result.history;
+    latest = result.latest;
+    source = 'Frankfurter';
+  } catch {
+    // 2차: fawazahmed0 월별 샘플
+    try {
+      const sampleDates = [];
+      for (let i = 11; i >= 0; i--) {
+        const d = new Date(end); d.setMonth(d.getMonth() - i);
+        sampleDates.push(dateStr(d));
+      }
+      const responses = await Promise.all(
+        ['latest', ...sampleDates].map(dt =>
+          fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${dt}/v1/currencies/krw.json`, { signal: AbortSignal.timeout(10000) })
+            .then(r => r.ok ? r.json() : null).catch(() => null)
+        )
+      );
+      CURRENCIES.forEach(c => { history[c.code] = []; });
+      responses.forEach((json, i) => {
+        if (!json?.krw) return;
+        const dt = i === 0 ? dateStr(end) : sampleDates[i - 1];
+        CURRENCIES.forEach(c => {
+          const raw = json.krw[c.code.toLowerCase()];
+          if (!raw) return;
+          const val = { t: new Date(dt), v: (1 / raw) * c.per };
+          if (i === 0) latest[c.code] = val.v;
+          else history[c.code].push(val);
+        });
       });
-    });
-    CURRENCIES.forEach(c => { history[c.code].sort((a, b) => a.t - b.t); });
-    return { history, latest, source: 'fawazahmed0' };
-  } catch {}
+      source = 'fawazahmed0';
+    } catch { return null; }
+  }
 
-  return null;
+  return { history, latest, source };
 }
 
 function getPercentile(current, history) {
@@ -252,14 +260,13 @@ function renderCards() {
     const pct1m = changePct(history, 30);
     const pctile = getPercentile(current, history);
     const timing = timingStatus(pctile);
-    const displayRate = current * (c.per || 1);
     const card = document.createElement('div');
     card.className = 'currency-card' + (c.code === selectedCode ? ' active' : '');
     card.onclick = () => selectCurrency(c.code);
     card.innerHTML = `
       <span class="flag">${c.flag}</span>
       <div class="cc-name">${c.name}</div>
-      <div class="cc-rate">${displayRate.toLocaleString('ko-KR', { maximumFractionDigits: 1 })}원</div>
+      <div class="cc-rate">${current.toLocaleString('ko-KR', { maximumFractionDigits: 1 })}원</div>
       <div class="cc-unit">${c.unit} 기준</div>
       <div class="badge-row">
         <span class="badge ${pct1m >= 0 ? 'badge-up' : 'badge-down'}">${pct1m >= 0 ? '▲' : '▼'} ${Math.abs(pct1m).toFixed(1)}%</span>
@@ -294,11 +301,11 @@ function renderChart() {
   const history = fullHistory.slice(-currentPeriod - 1);
   document.getElementById('chart-title').textContent = `${c.flag} ${c.name} 환율 추이`;
   const labels = history.map(d => { const dt = new Date(d.t); return `${dt.getMonth()+1}/${dt.getDate()}`; });
-  const values = history.map(d => d.v * (c.per || 1));
-  const min1y = Math.min(...fullHistory.map(d => d.v * (c.per || 1)));
-  const max1y = Math.max(...fullHistory.map(d => d.v * (c.per || 1)));
+  const values = history.map(d => d.v);
+  const min1y = Math.min(...fullHistory.map(d => d.v));
+  const max1y = Math.max(...fullHistory.map(d => d.v));
   const current = values[values.length - 1];
-  const pctChange = ((current - values[0]) / values[0]) * 100;
+  const pctChange = values.length > 1 ? ((current - values[0]) / values[0]) * 100 : 0;
   document.getElementById('stat-row').innerHTML = `
     <div class="stat-item"><div class="stat-label">현재</div><div class="stat-val">${current.toLocaleString('ko-KR',{maximumFractionDigits:1})}원</div></div>
     <div class="stat-item"><div class="stat-label">1년 최저</div><div class="stat-val" style="color:#3B6D11">${min1y.toLocaleString('ko-KR',{maximumFractionDigits:1})}원</div></div>
