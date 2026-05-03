@@ -4,6 +4,23 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>여행 환율 대시보드</title>
+
+  <!-- OG 메타태그 -->
+  <meta property="og:title" content="여행 환율 대시보드" />
+  <meta property="og:description" content="일본, 미국, 유럽, 태국 등 8개국 환율을 한눈에. 1년 기준 지금 가기 좋은지 바로 확인하세요." />
+  <meta property="og:url" content="https://mangosteen007.github.io/travel-exchange-dashboard/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:locale" content="ko_KR" />
+
+  <meta property="og:image" content="https://mangosteen007.github.io/travel-exchange-dashboard/preview.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+
+  <!-- 트위터 카드 -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="여행 환율 대시보드" />
+  <meta name="twitter:description" content="일본, 미국, 유럽, 태국 등 8개국 환율을 한눈에. 1년 기준 지금 가기 좋은지 바로 확인하세요." />
+  <meta name="twitter:image" content="https://mangosteen007.github.io/travel-exchange-dashboard/preview.png" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -362,7 +379,7 @@ async function init() {
   }
   const now = new Date();
   document.getElementById('update-time').textContent =
-    `${now.toLocaleDateString('ko-KR')} ${now.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})} 기준 · 환율 데이터 (${data.source})`;
+    `${now.toLocaleDateString('ko-KR')} ${now.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})} 기준 · 실제 환율 데이터 (${data.source})`;
   CURRENCIES.forEach(c => {
     ratesData[c.code] = data.latest[c.code];
     historicalData[c.code] = data.history[c.code] || [];
