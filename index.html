@@ -185,46 +185,74 @@ async function fetchAllData() {
   const end = new Date();
   const start = new Date();
   start.setFullYear(start.getFullYear() - 1);
-
-  const fxCodes = CURRENCIES.filter(c => c.code !== 'VND').map(c => c.code).join(',') + ',KRW';
-
-  // 1차: Frankfurter (EUR 기준, 일별 히스토리)
   let history = {};
   let latest = {};
   let source = '';
+  CURRENCIES.forEach(c => { history[c.code] = []; });
 
+  // 1차: open.er-api.com (CORS 허용, 무료, 최신 환율)
+  // 히스토리는 월별로 직접 날짜 지정해서 가져오기
   try {
-    const [histRes, latestRes] = await Promise.all([
-      fetch(`https://api.frankfurter.dev/${dateStr(start)}..${dateStr(end)}?to=${fxCodes}`, { signal: AbortSignal.timeout(10000) }),
-      fetch(`https://api.frankfurter.dev/v1/latest?to=${fxCodes}`, { signal: AbortSignal.timeout(10000) })
-    ]);
-    if (!histRes.ok || !latestRes.ok) throw new Error('frankfurter fail');
-    const histJson = await histRes.json();
+    // 최신 환율
+    const latestRes = await fetch('https://open.er-api.com/v6/latest/KRW', { signal: AbortSignal.timeout(10000) });
+    if (!latestRes.ok) throw new Error();
     const latestJson = await latestRes.json();
+    CURRENCIES.forEach(c => {
+      const raw = latestJson.rates[c.code];
+      if (raw) latest[c.code] = (1 / raw) * c.per;
+    });
 
-    const allRates = { ...histJson.rates };
-    allRates[latestJson.date] = latestJson.rates;
-    const dates = Object.keys(allRates).sort();
-    const result = eurRatesToKrw(allRates, dates);
-    history = result.history;
-    latest = result.latest;
-    source = 'Frankfurter';
-  } catch {
-    // 2차: fawazahmed0 - latest만 사용, 히스토리는 없음
-    try {
-      const latestRes = await fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/krw.json`, { signal: AbortSignal.timeout(10000) });
-      if (!latestRes.ok) throw new Error();
-      const latestJson = await latestRes.json();
-      CURRENCIES.forEach(c => { history[c.code] = []; });
+    // 히스토리: 과거 12개월 날짜별 요청
+    const monthDates = [];
+    for (let i = 1; i <= 12; i++) {
+      const d = new Date(end);
+      d.setMonth(d.getMonth() - i);
+      // open.er-api 는 히스토리 미지원 → exchangerate.host 시도
+      monthDates.push(dateStr(d));
+    }
+
+    // exchangerate.host 히스토리 (CORS 허용)
+    const histResponses = await Promise.all(
+      monthDates.map(dt =>
+        fetch(`https://api.exchangerate.host/historical?date=${dt}&base=KRW&symbols=${CURRENCIES.map(c=>c.code).join(',')}`, { signal: AbortSignal.timeout(8000) })
+          .then(r => r.ok ? r.json() : null).catch(() => null)
+      )
+    );
+    let gotHistory = false;
+    histResponses.forEach((json, i) => {
+      if (!json?.rates) return;
+      gotHistory = true;
       CURRENCIES.forEach(c => {
-        const raw = latestJson.krw?.[c.code.toLowerCase()];
-        if (raw) latest[c.code] = (1 / raw) * c.per;
+        const raw = json.rates[c.code];
+        if (raw) history[c.code].push({ t: new Date(monthDates[i]), v: (1 / raw) * c.per });
       });
-      source = 'fawazahmed0 (히스토리 없음 — 여행 적기 판단 불가)';
-    } catch { return null; }
-  }
+    });
+    CURRENCIES.forEach(c => {
+      history[c.code].sort((a, b) => a.t - b.t);
+      // 최신값 끝에 추가
+      if (latest[c.code]) history[c.code].push({ t: new Date(), v: latest[c.code] });
+    });
+    source = gotHistory ? 'open.er-api + exchangerate.host' : 'open.er-api (최신 환율만)';
+    return { history, latest, source };
+  } catch {}
 
-  return { history, latest, source };
+  // 2차: fawazahmed0 (jsDelivr CDN)
+  try {
+    const latestRes = await fetch('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/krw.json', { signal: AbortSignal.timeout(10000) });
+    if (!latestRes.ok) throw new Error();
+    const latestJson = await latestRes.json();
+    CURRENCIES.forEach(c => {
+      const raw = latestJson.krw?.[c.code.toLowerCase()];
+      if (raw) {
+        latest[c.code] = (1 / raw) * c.per;
+        history[c.code] = [{ t: new Date(), v: latest[c.code] }];
+      }
+    });
+    source = 'fawazahmed0 (최신 환율만)';
+    return { history, latest, source };
+  } catch {}
+
+  return null;
 }
 
 function scrollCards(dir) {
@@ -320,6 +348,13 @@ function renderChart() {
   const displayHistory = history.length >= 2 ? history : fullHistory.slice(-2);
 
   document.getElementById('chart-title').textContent = `${c.flag} ${c.name} 환율 추이`;
+
+  // 데이터 없을 때 빈 차트
+  if (displayHistory.length === 0) {
+    document.getElementById('stat-row').innerHTML = '';
+    if (chartInstance) chartInstance.destroy();
+    return;
+  }
   const labels = displayHistory.map(d => { const dt = new Date(d.t); return `${dt.getMonth()+1}/${dt.getDate()}`; });
   const values = displayHistory.map(d => d.v);
   const min1y = fullHistory.length ? Math.min(...fullHistory.map(d => d.v)) : 0;
