@@ -141,118 +141,66 @@ let selectedCode = 'JPY';
 let chartInstance = null;
 let currentPeriod = 365;
 
-function dateStr(d) {
-  return d.toISOString().slice(0, 10);
-}
 
-// EUR 기준 rates에서 KRW-per-표시단위 계산
-// rates[date] = { USD: 1.08, JPY: 160, KRW: 1500, ... } (EUR 기준)
-function eurRatesToKrw(ratesObj, dates) {
-  const history = {};
+async function fetchAllData() {
+  const BASE = 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api';
+  const FALLBACK = 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/krw.json';
+
+  function dateStr(d) {
+    return d.toISOString().slice(0, 10);
+  }
+
+  async function fetchDay(dateTag) {
+    const url = `${BASE}@${dateTag}/v1/currencies/krw.json`;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return null;
+      return (await res.json()).krw || null;
+    } catch { return null; }
+  }
+
+  // 최신 환율
+  const latestKrw = await fetchDay('latest');
+  if (!latestKrw) return null;
+
   const latest = {};
+  CURRENCIES.forEach(c => {
+    const raw = latestKrw[c.code.toLowerCase()];
+    if (raw) latest[c.code] = (1 / raw) * c.per;
+  });
+
+  // 과거 1년치: 주 1회 샘플 (52개) → 적당한 해상도 + 빠른 로딩
+  const history = {};
   CURRENCIES.forEach(c => { history[c.code] = []; });
 
-  dates.forEach(dt => {
-    const r = ratesObj[dt];
-    if (!r || !r['KRW']) return;
-    const eurToKrw = r['KRW']; // 1 EUR = N KRW
+  const today = new Date();
+  const sampleDates = [];
+  for (let i = 1; i <= 52; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i * 7);
+    sampleDates.push(dateStr(d));
+  }
+
+  // 병렬로 한번에 요청
+  const results = await Promise.all(
+    sampleDates.map(dt => fetchDay(dt))
+  );
+
+  results.forEach((krw, i) => {
+    if (!krw) return;
     CURRENCIES.forEach(c => {
-      if (c.code === 'VND') return; // 별도 처리
-      const eurToX = c.code === 'EUR' ? 1 : r[c.code];
-      if (!eurToX) return;
-      // 1 KRW = (1/eurToKrw) EUR = (1/eurToKrw * eurToX) 외화
-      // 1 외화 = eurToKrw / eurToX KRW
-      const krwPerOne = eurToKrw / eurToX;
-      history[c.code].push({ t: new Date(dt), v: krwPerOne * c.per });
+      const raw = krw[c.code.toLowerCase()];
+      if (raw) history[c.code].push({ t: new Date(sampleDates[i]), v: (1 / raw) * c.per });
     });
   });
 
-  // latest = 마지막 날짜
-  const lastDt = dates[dates.length - 1];
-  const r = ratesObj[lastDt];
-  if (r && r['KRW']) {
-    CURRENCIES.forEach(c => {
-      if (c.code === 'VND') return;
-      const eurToX = c.code === 'EUR' ? 1 : r[c.code];
-      if (!eurToX) return;
-      latest[c.code] = (r['KRW'] / eurToX) * c.per;
-    });
-  }
-  return { history, latest };
-}
+  // 날짜 오름차순 정렬 + 오늘 최신값 추가
+  CURRENCIES.forEach(c => {
+    history[c.code].sort((a, b) => a.t - b.t);
+    if (latest[c.code]) history[c.code].push({ t: today, v: latest[c.code] });
+  });
 
-async function fetchAllData() {
-  const end = new Date();
-  const start = new Date();
-  start.setFullYear(start.getFullYear() - 1);
-  let history = {};
-  let latest = {};
-  let source = '';
-  CURRENCIES.forEach(c => { history[c.code] = []; });
-
-  // 1차: open.er-api.com (CORS 허용, 무료, 최신 환율)
-  // 히스토리는 월별로 직접 날짜 지정해서 가져오기
-  try {
-    // 최신 환율
-    const latestRes = await fetch('https://open.er-api.com/v6/latest/KRW', { signal: AbortSignal.timeout(10000) });
-    if (!latestRes.ok) throw new Error();
-    const latestJson = await latestRes.json();
-    CURRENCIES.forEach(c => {
-      const raw = latestJson.rates[c.code];
-      if (raw) latest[c.code] = (1 / raw) * c.per;
-    });
-
-    // 히스토리: 과거 12개월 날짜별 요청
-    const monthDates = [];
-    for (let i = 1; i <= 12; i++) {
-      const d = new Date(end);
-      d.setMonth(d.getMonth() - i);
-      // open.er-api 는 히스토리 미지원 → exchangerate.host 시도
-      monthDates.push(dateStr(d));
-    }
-
-    // exchangerate.host 히스토리 (CORS 허용)
-    const histResponses = await Promise.all(
-      monthDates.map(dt =>
-        fetch(`https://api.exchangerate.host/historical?date=${dt}&base=KRW&symbols=${CURRENCIES.map(c=>c.code).join(',')}`, { signal: AbortSignal.timeout(8000) })
-          .then(r => r.ok ? r.json() : null).catch(() => null)
-      )
-    );
-    let gotHistory = false;
-    histResponses.forEach((json, i) => {
-      if (!json?.rates) return;
-      gotHistory = true;
-      CURRENCIES.forEach(c => {
-        const raw = json.rates[c.code];
-        if (raw) history[c.code].push({ t: new Date(monthDates[i]), v: (1 / raw) * c.per });
-      });
-    });
-    CURRENCIES.forEach(c => {
-      history[c.code].sort((a, b) => a.t - b.t);
-      // 최신값 끝에 추가
-      if (latest[c.code]) history[c.code].push({ t: new Date(), v: latest[c.code] });
-    });
-    source = gotHistory ? 'open.er-api + exchangerate.host' : 'open.er-api (최신 환율만)';
-    return { history, latest, source };
-  } catch {}
-
-  // 2차: fawazahmed0 (jsDelivr CDN)
-  try {
-    const latestRes = await fetch('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/krw.json', { signal: AbortSignal.timeout(10000) });
-    if (!latestRes.ok) throw new Error();
-    const latestJson = await latestRes.json();
-    CURRENCIES.forEach(c => {
-      const raw = latestJson.krw?.[c.code.toLowerCase()];
-      if (raw) {
-        latest[c.code] = (1 / raw) * c.per;
-        history[c.code] = [{ t: new Date(), v: latest[c.code] }];
-      }
-    });
-    source = 'fawazahmed0 (최신 환율만)';
-    return { history, latest, source };
-  } catch {}
-
-  return null;
+  return { history, latest, source: 'fawazahmed0' };
 }
 
 function scrollCards(dir) {
@@ -301,7 +249,7 @@ function renderCards() {
     const history = historicalData[c.code] || [];
     const current = ratesData[c.code];
     if (!current) return;
-    const pct1m = changePct(history, 30);
+    const pct1y = changePct(history, 365);
     const pctile = getPercentile(current, history);
     const timing = timingStatus(pctile);
     const hasHistory = history.length >= 10;
@@ -314,7 +262,7 @@ function renderCards() {
       <div class="cc-rate">${current.toLocaleString('ko-KR', { maximumFractionDigits: 1 })}원</div>
       <div class="cc-unit">${c.unit} 기준</div>
       <div class="badge-row">
-        <span class="badge ${pct1m >= 0 ? 'badge-up' : 'badge-down'}">${pct1m >= 0 ? '▲' : '▼'} ${Math.abs(pct1m).toFixed(1)}%</span>
+        <span class="badge ${pct1y >= 0 ? 'badge-up' : 'badge-down'}">${pct1y >= 0 ? '▲' : '▼'} 1년 ${Math.abs(pct1y).toFixed(1)}%</span>
         ${hasHistory ? `<span style="display:flex;align-items:center;gap:4px;"><span class="timing-dot ${timing.dotCls}"></span><span class="timing-label">${timing.label}</span></span>` : ''}
       </div>`;
     grid.appendChild(card);
