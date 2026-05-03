@@ -362,7 +362,7 @@ async function init() {
   }
   const now = new Date();
   document.getElementById('update-time').textContent =
-    `${now.toLocaleDateString('ko-KR')} ${now.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})} 기준 · 실제 환율 데이터 (${data.source})`;
+    `${now.toLocaleDateString('ko-KR')} ${now.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})} 기준 · 환율 데이터 (${data.source})`;
   CURRENCIES.forEach(c => {
     ratesData[c.code] = data.latest[c.code];
     historicalData[c.code] = data.history[c.code] || [];
