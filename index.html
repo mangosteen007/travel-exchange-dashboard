@@ -78,7 +78,13 @@
     .percentile-bar { height: 4px; border-radius: 2px; background: #eee; margin-top: 8px; position: relative; }
     .percentile-segment { height: 4px; border-radius: 2px; position: absolute; top: 0; }
     .percentile-marker { width: 8px; height: 8px; border-radius: 50%; background: #1a1a1a; position: absolute; top: -2px; transform: translateX(-50%); border: 1.5px solid #fff; }
-    .loading-msg { display: flex; align-items: center; justify-content: center; height: 160px; font-size: 14px; color: #999; grid-column: 1 / -1; }
+    .scroll-wrapper { position: relative; margin-bottom: 24px; }
+  .scroll-arrow { position: absolute; top: 50%; transform: translateY(-50%); width: 32px; height: 32px; border-radius: 50%; background: var(--bg, #fff); border: 0.5px solid rgba(0,0,0,0.15); box-shadow: 0 2px 8px rgba(0,0,0,0.12); display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 10; font-size: 14px; color: #444; transition: opacity 0.2s; user-select: none; }
+  .scroll-arrow:hover { background: #f5f5f0; }
+  .scroll-arrow.hidden { opacity: 0; pointer-events: none; }
+  .scroll-arrow-left { left: -14px; }
+  .scroll-arrow-right { right: -14px; }
+  @media (prefers-color-scheme: dark) { .scroll-arrow { background: #2e2e2e; border-color: rgba(255,255,255,0.15); color: #ccc; } .scroll-arrow:hover { background: #3a3a3a; } }
     .error-msg { font-size: 13px; color: #999; text-align: center; padding: 20px; grid-column: 1 / -1; }
   </style>
 </head>
@@ -88,18 +94,22 @@
   <div class="update-time" id="update-time">환율 불러오는 중...</div>
 
   <div class="section-label">주요 여행지 환율</div>
-  <div class="currency-grid" id="currency-grid">
-    <div class="loading-msg">환율 데이터 불러오는 중...</div>
+  <div class="scroll-wrapper">
+    <button class="scroll-arrow scroll-arrow-left hidden" id="arrow-left" onclick="scrollCards(-1)">&#8249;</button>
+    <div class="currency-grid" id="currency-grid">
+      <div class="loading-msg">환율 데이터 불러오는 중...</div>
+    </div>
+    <button class="scroll-arrow scroll-arrow-right" id="arrow-right" onclick="scrollCards(1)">&#8250;</button>
   </div>
 
   <div class="chart-wrap">
     <div class="chart-header">
       <div class="chart-title" id="chart-title">환율 추이</div>
       <div class="period-tabs">
-        <button class="period-btn active" onclick="changePeriod(30, this)">1개월</button>
+        <button class="period-btn" onclick="changePeriod(30, this)">1개월</button>
         <button class="period-btn" onclick="changePeriod(90, this)">3개월</button>
         <button class="period-btn" onclick="changePeriod(180, this)">6개월</button>
-        <button class="period-btn" onclick="changePeriod(365, this)">1년</button>
+        <button class="period-btn active" onclick="changePeriod(365, this)">1년</button>
       </div>
     </div>
     <div style="position: relative; height: 220px;">
@@ -129,7 +139,7 @@ let ratesData = {};      // code → KRW per 표시단위 (예: JPY → 100엔�
 let historicalData = {}; // code → [{t, v}] (v = KRW per 표시단위)
 let selectedCode = 'JPY';
 let chartInstance = null;
-let currentPeriod = 30;
+let currentPeriod = 365;
 
 function dateStr(d) {
   return d.toISOString().slice(0, 10);
@@ -185,8 +195,8 @@ async function fetchAllData() {
 
   try {
     const [histRes, latestRes] = await Promise.all([
-      fetch(`https://api.frankfurter.app/${dateStr(start)}..${dateStr(end)}?to=${fxCodes}`, { signal: AbortSignal.timeout(10000) }),
-      fetch(`https://api.frankfurter.app/latest?to=${fxCodes}`, { signal: AbortSignal.timeout(10000) })
+      fetch(`https://api.frankfurter.dev/${dateStr(start)}..${dateStr(end)}?to=${fxCodes}`, { signal: AbortSignal.timeout(10000) }),
+      fetch(`https://api.frankfurter.dev/v1/latest?to=${fxCodes}`, { signal: AbortSignal.timeout(10000) })
     ]);
     if (!histRes.ok || !latestRes.ok) throw new Error('frankfurter fail');
     const histJson = await histRes.json();
@@ -200,36 +210,35 @@ async function fetchAllData() {
     latest = result.latest;
     source = 'Frankfurter';
   } catch {
-    // 2차: fawazahmed0 월별 샘플
+    // 2차: fawazahmed0 - latest만 사용, 히스토리는 없음
     try {
-      const sampleDates = [];
-      for (let i = 11; i >= 0; i--) {
-        const d = new Date(end); d.setMonth(d.getMonth() - i);
-        sampleDates.push(dateStr(d));
-      }
-      const responses = await Promise.all(
-        ['latest', ...sampleDates].map(dt =>
-          fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${dt}/v1/currencies/krw.json`, { signal: AbortSignal.timeout(10000) })
-            .then(r => r.ok ? r.json() : null).catch(() => null)
-        )
-      );
+      const latestRes = await fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/krw.json`, { signal: AbortSignal.timeout(10000) });
+      if (!latestRes.ok) throw new Error();
+      const latestJson = await latestRes.json();
       CURRENCIES.forEach(c => { history[c.code] = []; });
-      responses.forEach((json, i) => {
-        if (!json?.krw) return;
-        const dt = i === 0 ? dateStr(end) : sampleDates[i - 1];
-        CURRENCIES.forEach(c => {
-          const raw = json.krw[c.code.toLowerCase()];
-          if (!raw) return;
-          const val = { t: new Date(dt), v: (1 / raw) * c.per };
-          if (i === 0) latest[c.code] = val.v;
-          else history[c.code].push(val);
-        });
+      CURRENCIES.forEach(c => {
+        const raw = latestJson.krw?.[c.code.toLowerCase()];
+        if (raw) latest[c.code] = (1 / raw) * c.per;
       });
-      source = 'fawazahmed0';
+      source = 'fawazahmed0 (히스토리 없음 — 여행 적기 판단 불가)';
     } catch { return null; }
   }
 
   return { history, latest, source };
+}
+
+function scrollCards(dir) {
+  const grid = document.getElementById('currency-grid');
+  grid.scrollBy({ left: dir * 170, behavior: 'smooth' });
+}
+
+function updateArrows() {
+  const grid = document.getElementById('currency-grid');
+  const left = document.getElementById('arrow-left');
+  const right = document.getElementById('arrow-right');
+  if (!left || !right) return;
+  left.classList.toggle('hidden', grid.scrollLeft <= 4);
+  right.classList.toggle('hidden', grid.scrollLeft + grid.clientWidth >= grid.scrollWidth - 4);
 }
 
 function getPercentile(current, history) {
@@ -267,6 +276,7 @@ function renderCards() {
     const pct1m = changePct(history, 30);
     const pctile = getPercentile(current, history);
     const timing = timingStatus(pctile);
+    const hasHistory = history.length >= 10;
     const card = document.createElement('div');
     card.className = 'currency-card' + (c.code === selectedCode ? ' active' : '');
     card.onclick = () => selectCurrency(c.code);
@@ -277,10 +287,7 @@ function renderCards() {
       <div class="cc-unit">${c.unit} 기준</div>
       <div class="badge-row">
         <span class="badge ${pct1m >= 0 ? 'badge-up' : 'badge-down'}">${pct1m >= 0 ? '▲' : '▼'} ${Math.abs(pct1m).toFixed(1)}%</span>
-        <span style="display:flex;align-items:center;gap:4px;">
-          <span class="timing-dot ${timing.dotCls}"></span>
-          <span class="timing-label">${timing.label}</span>
-        </span>
+        ${hasHistory ? `<span style="display:flex;align-items:center;gap:4px;"><span class="timing-dot ${timing.dotCls}"></span><span class="timing-label">${timing.label}</span></span>` : ''}
       </div>`;
     grid.appendChild(card);
   });
@@ -378,6 +385,8 @@ async function init() {
     historicalData[c.code] = data.history[c.code] || [];
   });
   renderCards();
+  document.getElementById('currency-grid').addEventListener('scroll', updateArrows);
+  setTimeout(updateArrows, 100);
   renderChart();
 }
 
